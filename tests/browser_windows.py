@@ -49,7 +49,7 @@ def check(package):
                     content=Path(event.value.path()).read_text(encoding='utf-8-sig');assert 'M1' in content and 'F-101' in content
                     page.locator('#homeTop').click();page.locator('#reconcileStart').click();frame.locator('#detail').filter(has_text='M1 / Confermato').wait_for()
                     save_job('Incassi Windows','reconcile')
-                    page.locator('#openClients').click();page.locator('#jobsList .card').filter(has_text='Incassi Windows').get_by_role('button').click();frame.locator('#detail').filter(has_text='M1 / Confermato').wait_for()
+                    page.locator('#openClients').click();page.locator('#jobsList .card').filter(has_text='Incassi Windows').get_by_role('button', name='Riprendi lavorazione', exact=False).click();frame.locator('#detail').filter(has_text='M1 / Confermato').wait_for()
                     (ROOT/'test-results').mkdir(exist_ok=True);page.screenshot(path=str(ROOT/'test-results/windows-riconcilia.png'),full_page=True)
                     browser.close()
                 request=urllib.request.Request(base+'api/shutdown',data=b'{}',headers={'Content-Type':'application/json'})
