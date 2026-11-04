@@ -30,7 +30,7 @@ def build(output,cache):
     try:
         extract_verified(archive,runtime)
         app=folder/'app';app.mkdir()
-        for name in ('server.py','docflow.py','payroll.py','payroll_rules.py','workspaces.py'):shutil.copy2(ROOT/name,app/name)
+        for name in ('server.py','docflow.py','payroll.py','payroll_rules.py','workspaces.py','company_demo.py','invoice_xml.py'):shutil.copy2(ROOT/name,app/name)
         for name in ('web','examples','vendor'):shutil.copytree(ROOT/name,app/name,ignore=shutil.ignore_patterns('__pycache__','*.pyc','.DS_Store'))
         for module,filename in [('reportflow','ReportFlow_DEMO.html'),('riconcilia','Riconcilia_DEMO.html')]:
             target=app/module/'dist';target.mkdir(parents=True)

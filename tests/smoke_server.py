@@ -29,7 +29,7 @@ def smoke(package=None, engine=None):
                     time.sleep(.1)
                 assert base,'Server non pronto entro 40 secondi'
                 with urllib.request.urlopen(base) as r:
-                    assert 'Un buon lavoro' in r.read().decode('utf-8'), 'Interfaccia non letta come UTF-8'
+                    assert 'Il lavoro dello studio' in r.read().decode('utf-8'), 'Interfaccia non letta come UTF-8'
                 with urllib.request.urlopen(base+'theme.css') as r:
                     assert b'Blu notte' in r.read() and 'text/css' in r.headers['Content-Type']
                 for route,title in [('reportflow','ReportFlow'),('riconcilia','Riconcilia')]:
