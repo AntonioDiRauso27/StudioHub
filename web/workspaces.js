@@ -38,11 +38,11 @@ async function openArea(mode='clients'){
  if(payDirty&&!confirm('Ci sono note paghe non salvate. Aprire comunque l’area clienti?'))return;
  for(let id of ['home','docs','payroll','reports','reconcile'])$(id).classList.add('hidden');currentModule=null;$('saveWork').classList.add('hidden');$('finishWork').classList.add('hidden');$('closedWorkHint').classList.add('hidden');$('workState').textContent='Archivio locale delle lavorazioni';$('clientArea').classList.remove('hidden');document.querySelectorAll('aside nav button').forEach(b=>b.classList.toggle('active',b.id===(mode==='resume'?'navResume':'navJobs')));window.scrollTo(0,0);
  $('areaTitle').textContent=mode==='resume'?'Riprendi il tuo lavoro':'Clienti e lavorazioni';$('areaKicker').textContent=mode==='resume'?'IN CORSO E COMPLETATE':'CLIENTI E PERIODI';$('statusFilter').value=mode==='resume'?'open':'all';
- try{await refreshJobs()}catch(e){$('jobsMessage').textContent=e.message}
+ try{await refreshJobs();if(typeof activeCompany!=='undefined'&&activeCompany){$('clientFilter').value=activeCompany.name;$('periodFilter').value='';$('moduleFilter').value='';$('areaTitle').textContent='Lavorazioni · '+activeCompany.name;renderJobs()}}catch(e){$('jobsMessage').textContent=e.message}
 }
-async function resumeJob(id){
+async function restoreSavedJob(id){
  if(saveInFlight)return;let meta=jobs.find(j=>j.id===id);if(!meta)return;
- if(!confirm(`Riprendere “${meta.title}” di ${meta.client}? Sostituirà i dati attualmente aperti nel modulo ${moduleNames[meta.module]}. Le altre lavorazioni già salvate restano disponibili.`))return;
+
  try{
  const job=await api('api/jobs/open',{id}),s=job.snapshot;payDirty=false;
  if(job.module==='docs'){rows=s.rows;batch=s.batch;selected=Math.min(s.selected||0,rows.length-1);$('registry').value=s.registry;page(true);stage(2);render()}
@@ -56,7 +56,7 @@ async function resumeJob(id){
  }catch(e){$('jobsMessage').textContent='Ripresa non completata: '+e.message;alert(e.message)}
 }
 $('saveWork').onclick=async()=>{
- try{await snapshotModule(currentModule);await refreshJobs();let ref=jobRefs[currentModule];$('saveClient').value=ref?.client||'';$('savePeriod').value=ref?.period||(currentModule==='reports'?'2026-Q3':new Date().toISOString().slice(0,7));$('saveTitle').value=ref?.title||moduleNames[currentModule];$('saveAsNew').checked=false;$('copyOption').classList.toggle('hidden',!ref);$('saveError').textContent='';$('saveDialog').showModal()}catch(e){showSaveState(e.message)}
+ try{await snapshotModule(currentModule);await refreshJobs();let ref=jobRefs[currentModule];$('saveClient').value=ref?.client||activeCompany?.name||'';$('saveClient').readOnly=!!activeCompany;$('savePeriod').value=ref?.period||(currentModule==='reports'?'2026-Q3':new Date().toISOString().slice(0,7));$('saveTitle').value=ref?.title||moduleNames[currentModule];$('saveAsNew').checked=false;$('copyOption').classList.toggle('hidden',!ref);$('saveError').textContent='';$('saveDialog').showModal()}catch(e){showSaveState(e.message)}
 };
 $('saveForm').onsubmit=async e=>{e.preventDefault();$('confirmSave').disabled=true;try{let old=$('saveAsNew').checked?{}:jobRefs[currentModule]||{};await storeCurrent({...old,client:$('saveClient').value.trim(),period:$('savePeriod').value.trim(),title:$('saveTitle').value.trim()});$('saveDialog').close()}catch(e){$('saveError').textContent=e.message}finally{$('confirmSave').disabled=false}};
 $('cancelSave').onclick=()=>$('saveDialog').close();$('navJobs').onclick=$('openClients').onclick=()=>openArea('clients');$('refreshJobs').onclick=()=>refreshJobs().catch(e=>$('jobsMessage').textContent=e.message);
@@ -79,7 +79,7 @@ function detachSavedWork(module){delete jobRefs[module];delete lastSnapshots[mod
 window.addEventListener('message',event=>{if(event.origin!==location.origin||event.data?.type!=='studiohub-new-batch')return;for(let [module,id] of [['reports','reportFrame'],['reconcile','reconcileFrame']])if(event.source===$(id).contentWindow)detachSavedWork(module)});
 
 function renderHomeRecent(){
- const host=$('homeRecent');if(!host)return;const open=jobs.filter(j=>j.status!=='completed');
+ const host=$('homeRecent');if(!host)return;const open=jobs.filter(j=>j.status!=='completed'&&(typeof activeCompany==='undefined'||!activeCompany||j.client===activeCompany.name));
  host.textContent=open.length?`${open.length} lavorazioni in corso · apri per continuare o completarle`:'Bozze automatiche, lavorazioni in corso e storico delle completate.';
 }
 $('homeJobs').onclick=$('openResume').onclick=$('navResume').onclick=()=>openArea('resume');
@@ -87,9 +87,10 @@ refreshJobs().catch(()=>$('homeRecent').textContent='Apri Clienti e lavorazioni 
 
 function draftMetadata(module,snapshot){
  const now=new Date(),month=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
- return {client:'Da assegnare',period:module==='reports'&&snapshot.quarter?snapshot.quarter:month,module,title:moduleNames[module]+' · bozza automatica'};
+ return {client:typeof activeCompany!=='undefined'&&activeCompany?activeCompany.name:'Da assegnare',period:module==='reports'&&snapshot.quarter?snapshot.quarter:month,module,title:moduleNames[module]+' · bozza automatica'};
 }
 function hasWorkData(module){
+ if(typeof companyLoading!=='undefined'&&companyLoading)return false;
  if(module==='docs')return rows.length>0&&!busy;
  if(module==='payroll')return !!payState&&!payBusy;
  try{return !!$(module==='reports'?'reportFrame':'reconcileFrame').contentWindow?.StudioHubModule?.snapshot()}catch{return false}

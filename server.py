@@ -8,10 +8,12 @@ from docflow import DEFAULT_CLIENTS, MAX_BYTES, MAX_FILES, analyze_batch, create
 import payroll
 import base64
 from workspaces import Workspaces
+from company_demo import catalog, ensure_companies
+from invoice_xml import import_files, fresh_examples
 import re
 from urllib.parse import unquote
 BASE=Path(getattr(sys,'_MEIPASS',Path(__file__).parent))
-APP_VERSION='0.4.0-blu-notte'
+APP_VERSION='0.8.6-ultimo-caricamento'
 
 def data_dir():
     if os.environ.get('STUDIOHUB_DATA'):return Path(os.environ['STUDIOHUB_DATA'])
@@ -41,6 +43,7 @@ def run_server(port=0):
             if route is None:return
             with mutex:
                 if route=='theme.css':return self.send((BASE/'web/theme.css').read_text(encoding='utf-8'),'text/css')
+                if route=='companies.js':return self.send((BASE/'web/companies.js').read_text(encoding='utf-8'),'text/javascript')
                 if route=='workspaces.js':return self.send((BASE/'web/workspaces.js').read_text(encoding='utf-8'),'text/javascript')
                 if route=='health':return self.send({'ok':True,'version':APP_VERSION})
                 if route=='':return self.send((BASE/'web/index.html').read_text(encoding='utf-8'),'text/html')
@@ -49,6 +52,14 @@ def run_server(port=0):
                     if item:return self.send(item['data'],item.get('type','text/csv'),attachment=item['name'])
                 if route=='riconcilia':return self.send((BASE/'riconcilia/dist/Riconcilia_DEMO.html').read_text(encoding='utf-8'),'text/html')
                 if route=='reportflow':return self.send((BASE/'reportflow/dist/ReportFlow_DEMO.html').read_text(encoding='utf-8'),'text/html')
+                if route=='api/invoices/examples':return self.send(fresh_examples(BASE))
+                if route=='api/companies':return self.send([{k:c[k] for k in ['id','name','employees','period']} for c in ensure_companies(BASE,saved)])
+                if route.startswith('api/company-example/'):
+                    company=next((c for c in catalog(BASE) if c['id']==route.rsplit('/',1)[-1]),None)
+                    if company:return self.send(company)
+                if route.startswith('company-payroll/'):
+                    company=next((c for c in catalog(BASE) if c['id']==route.rsplit('/',1)[-1]),None)
+                    if company:return self.send((BASE/'examples/companies'/company['id']/'paghe.csv').read_bytes(),'text/csv',attachment='Paghe_'+company['id']+'.csv')
                 if route=='api/jobs':return self.send(saved.list())
                 if route=='api/payroll':return self.send({**state['payroll'],'job':state['payroll_job']} if state['payroll'] else {})
                 if route=='payroll/template':return self.send((BASE/'examples/payroll_demo.csv').read_bytes(),'text/csv',attachment='Payroll_Esempio.csv')
@@ -64,6 +75,12 @@ def run_server(port=0):
                     entry=state['archives'].get(route[8:])
                     if entry:return self.send(entry,'application/zip',attachment='DocFlow_Archivio_Ordinato.zip')
             self.send_error(404)
+        def company(self):
+            code=self.headers.get('X-StudioHub-Company','')
+            if not code:return None
+            result=next((c for c in catalog(BASE) if c['id']==code),None)
+            if result is None:raise ValueError('Seleziona una delle aziende disponibili.')
+            return result
         def do_POST(self):
             route=self.route()
             if route is None:return
@@ -118,14 +135,17 @@ def run_server(port=0):
                         while len(state['downloads'])>10:del state['downloads'][next(iter(state['downloads']))]
                         return self.send({'url':'download/'+ident})
                     if route=='api/payroll/demo':
-                        state['payroll']=payroll.load_csv((BASE/'examples/payroll_demo.csv').read_bytes());return self.payroll_loaded()
+                        company=self.company();path=BASE/'examples/companies'/company['id']/'paghe.csv' if company else BASE/'examples/payroll_demo.csv'
+                        state['payroll']=payroll.load_csv(path.read_bytes());return self.payroll_loaded()
                     if route=='api/payroll/import':
                         state['payroll']=payroll.load_csv(body);return self.payroll_loaded()
                     if route=='api/payroll/update':
                         payroll.update(state['payroll'],json.loads(body));return self.send({'ok':True})
                     if route=='api/demo':
                         payload=json.loads(body);registry=payload.get('registry',DEFAULT_CLIENTS)
-                        files=[(p.name,p.read_bytes()) for p in sorted((BASE/'examples').glob('*.pdf'),key=lambda p:p.stem.rsplit('_',1)[-1])]
+                        company=self.company();folder=BASE/'examples/companies'/company['id'] if company else BASE/'examples'
+                        if company:registry=company['name']
+                        files=[(p.name,p.read_bytes()) for p in sorted(folder.glob('*.pdf'),key=lambda p:p.stem.rsplit('_',1)[-1])]
                         return self.analyze(files,registry)
                     if route=='api/analyze':
                         ctype=self.headers.get('Content-Type','')
@@ -140,6 +160,19 @@ def run_server(port=0):
                                 files.append((part.get_filename(),data))
                             elif part.get_param('name',header='content-disposition')=='registry':registry=data.decode('utf-8')
                         return self.analyze(files,registry)
+                    if route=='api/invoices/xml':
+                        payload=json.loads(body);return self.send({'results':import_files(saved,BASE,payload.get('files'),catalog(BASE))})
+                    if route=='api/docs/route':
+                        payload=json.loads(body)
+                        if payload.get('batch')!=state['batch']:raise ValueError('Il lotto è cambiato. Riaprilo prima di smistare.')
+                        edits=payload.get('rows',[])
+                        if {r.get('id') for r in edits}!={r['id'] for r,_ in state['documents']}:raise ValueError('Documenti non coerenti.')
+                        result=self.route_documents(state['documents'],edits,state['registry'])
+                        old=payload.get('job')
+                        if old:
+                            previous=saved.get(old)
+                            if previous['client']=='Da identificare' and previous['status']!='completed':saved.set_status(old,'completed',previous['revision'])
+                        return self.send({'routed':result})
                     if route=='api/archive':
                         payload=json.loads(body)
                         if payload.get('batch')!=state['batch']:raise ValueError('Il lotto è cambiato: ricarica l’anteprima.')
@@ -150,15 +183,31 @@ def run_server(port=0):
             except (ValueError,TypeError,KeyError,json.JSONDecodeError) as e:self.send({'error':str(e)},status=400)
             except Exception:self.send({'error':'Elaborazione non completata. Verifica i file e riprova.'},status=500)
         def payroll_loaded(self):
-            meta={'client':'Da assegnare','period':time.strftime('%Y-%m'),'module':'payroll','title':'Controlli paghe · bozza automatica'}
+            company=self.company()
+            meta={'client':company['name'] if company else 'Da assegnare','period':time.strftime('%Y-%m'),'module':'payroll','title':'Controlli paghe · bozza automatica'}
             job=saved.save(meta,{'version':1,'batch':state['payroll']['batch'],'payroll':state['payroll']})
             state['payroll_job']=job
             return self.send({**state['payroll'],'job':job})
+        def route_documents(self,documents,rows,registry):
+            allowed={c['name'] for c in catalog(BASE)};groups={}
+            for row in rows:
+                target=row.get('client') if row.get('client') in allowed else 'Da identificare'
+                groups.setdefault(target,[]).append(row)
+            result=[]
+            for client,items in groups.items():
+                ids={row['id'] for row in items}
+                snap={'version':1,'rows':items,'documents':[[row,base64.b64encode(data).decode()] for row,data in documents if row['id'] in ids],'registry':registry,'batch':secrets.token_hex(12),'selected':0}
+                period=next((row.get('date','')[:7] for row in items if re.fullmatch(r'20[0-9]{2}-[0-9]{2}-[0-9]{2}',row.get('date',''))),time.strftime('%Y-%m'))
+                job=saved.save({'client':client,'period':period,'module':'docs','title':'Documenti ricevuti · '+str(len(items))+' PDF'},snap)
+                result.append({**job,'count':len(items)})
+            return result
         def analyze(self,files,registry):
             documents=analyze_batch(files,registry)
             state.update(documents=documents,batch=secrets.token_hex(12),registry=registry)
             rows=[{**r,'approved':False} for r,_ in documents]
-            job=saved.save({'client':'Da assegnare','period':time.strftime('%Y-%m'),'module':'docs','title':'Documenti · bozza automatica'}, {'version':1,'rows':rows,'batch':state['batch'],'registry':registry,'selected':0,'documents':[[r,base64.b64encode(data).decode('ascii')] for r,data in documents]})
+            if self.headers.get('X-StudioHub-Inbox')=='1':return self.send({'routed':self.route_documents(documents,rows,registry)})
+            company=self.company()
+            job=saved.save({'client':company['name'] if company else 'Da assegnare','period':time.strftime('%Y-%m'),'module':'docs','title':'Documenti · bozza automatica'}, {'version':1,'rows':rows,'batch':state['batch'],'registry':registry,'selected':0,'documents':[[r,base64.b64encode(data).decode('ascii')] for r,data in documents]})
             self.send({'rows':rows,'batch':state['batch'],'job':job})
     server=ThreadingHTTPServer(('127.0.0.1',port),Handler);server.daemon_threads=True
     address=f'http://127.0.0.1:{server.server_port}/{token}/';info={'url':address,'pid':os.getpid()};lock=directory/'session.json';lock.write_text(json.dumps(info))
